@@ -1,0 +1,45 @@
+graph TD
+    subgraph Public_Internet ["Public Internet"]
+        User([Người dùng])
+    end
+
+    subgraph Docker_Network ["Docker Internal Network (Bridge)"]
+        Nginx[Nginx Alpine<br/>Reverse Proxy / Load Balancer]
+        
+        subgraph App_Layer ["Application Layer"]
+            Agent[Agent Service<br/>FastAPI / Uvicorn]
+        end
+
+        subgraph Data_Layer ["Data & Cache Layer"]
+            Redis[(Redis 7-Alpine<br/>Cache / Rate Limit)]
+            Qdrant[(Qdrant Vector DB<br/>RAG / Storage)]
+        end
+    end
+
+    subgraph Persistent_Storage ["Persistent Volumes"]
+        RedisVol[(redis_data)]
+        QdrantVol[(qdrant_data)]
+    end
+
+    %% Luồng dữ liệu
+    User -->|HTTP/HTTPS :80, :443| Nginx
+    Nginx -->|Proxy Pass| Agent
+    Agent -->|Query/Cache| Redis
+    Agent -->|Vector Search| Qdrant
+
+    %% Kết nối volumes
+    Redis --- RedisVol
+    Qdrant --- QdrantVol
+
+    %% Màu sắc mới
+    classDef userStyle fill:#6c5ce7,color:#fff,stroke:#4b3fb3,stroke-width:2px;
+    classDef proxyStyle fill:#00b894,color:#fff,stroke:#007f5f,stroke-width:2px;
+    classDef appStyle fill:#0984e3,color:#fff,stroke:#0652a3,stroke-width:2px;
+    classDef dataStyle fill:#e17055,color:#fff,stroke:#b5543c,stroke-width:2px;
+    classDef storageStyle fill:#fdcb6e,color:#2d3436,stroke:#e1a93a,stroke-width:2px;
+
+    class User userStyle;
+    class Nginx proxyStyle;
+    class Agent appStyle;
+    class Redis,Qdrant dataStyle;
+    class RedisVol,QdrantVol storageStyle;
