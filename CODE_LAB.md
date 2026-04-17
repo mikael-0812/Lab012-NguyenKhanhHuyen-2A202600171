@@ -105,12 +105,13 @@ python app.py
 
 **Nhiệm vụ:** So sánh 2 files `app.py`. Điền vào bảng:
 
-| Feature | Basic | Advanced | Tại sao quan trọng? |
-|---------|-------|----------|---------------------|
-| Config | Hardcode | Env vars | ... |
-| Health check |  |  | ... |
-| Logging | print() | JSON | ... |
-| Shutdown | Đột ngột | Graceful | ... |
+| Feature      | Basic                                                                                                | Advanced                                                                                                            | Tại sao quan trọng?                                                                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Config       | Hardcode secrets và config ngay trong code (`OPENAI_API_KEY`, `DATABASE_URL`, `DEBUG`, `MAX_TOKENS`) | Dùng environment/config object qua `settings` (`app_name`, `port`, `host`, `debug`, `allowed_origins`, `llm_model`) | Giúp an toàn hơn, không lộ secret khi push code, dễ đổi cấu hình theo môi trường dev/staging/prod mà không sửa mã nguồn.                                           |
+| Health check | Không có endpoint health check                                                                       | Có `/health`, thêm cả `/ready` và `/metrics`                                                                        | Cloud platform và load balancer cần endpoint này để biết app còn sống không, đã sẵn sàng nhận traffic chưa, và khi nào cần restart hoặc tạm ngừng route request.   |
+| Logging      | Dùng `print()` và còn in cả secret ra log                                                            | Dùng structured JSON logging với `logging`, log event có cấu trúc, tránh log secrets                                | Log có cấu trúc giúp dễ tìm kiếm, phân tích, đưa vào Datadog/Loki/ELK; đồng thời tránh rò rỉ thông tin nhạy cảm trong production.                                  |
+| Shutdown     | Đột ngột, không có lifecycle/shutdown handling                                                       | Graceful shutdown với `lifespan`, readiness flag, và xử lý `SIGTERM`                                                | Khi deploy trên cloud/container, app cần đóng kết nối và cho request đang chạy hoàn thành trước khi tắt, tránh mất dữ liệu hoặc lỗi giữa chừng.                    |
+
 
 ###  Checkpoint 1
 
@@ -144,9 +145,14 @@ cd ../../02-docker/develop
 **Nhiệm vụ:** Đọc `Dockerfile` và trả lời:
 
 1. Base image là gì?
+Base image là python:3.11. Đây là image Python đầy đủ, được chọn ở dòng FROM python:3.11.
 2. Working directory là gì?
+Working directory là /app, được đặt bằng WORKDIR /app. Từ sau dòng này, các lệnh như COPY, RUN, CMD sẽ mặc định làm việc trong thư mục đó nếu dùng đường dẫn tương đối.
 3. Tại sao COPY requirements.txt trước?
+Vì để tận dụng Docker layer cache. Dependencies thường thay đổi ít hơn source code, nếu requirements.txt không đổi, Docker có thể reuse layer pip install, image build lại nhanh hơn nhiều vì không cần cài lại toàn bộ package.
 4. CMD vs ENTRYPOINT khác nhau thế nào?
+- CMD là lệnh mặc định chạy khi container start. Nó dễ bị override khi truyền lệnh khác lúc docker run. Trong file này, CMD ["python", "app.py"] nghĩa là mặc định container sẽ chạy app bằng Python.
+- ENTRYPOINT là điểm vào cố định của container. Nó biến container thành “một executable”, và các đối số thêm vào khi docker run thường được nối vào sau ENTRYPOINT thay vì thay thế hoàn toàn.
 
 ###  Exercise 2.2: Build và run
 
@@ -166,6 +172,8 @@ curl http://localhost:8000/ask -X POST \
 **Quan sát:** Image size là bao nhiêu?
 ```bash
 docker images my-agent:develop
+REPOSITORY   TAG       IMAGE ID       CREATED          SIZE
+my-agent     develop   f3ff076db089   11 minutes ago   1.66GB
 ```
 
 ###  Exercise 2.3: Multi-stage build
@@ -175,25 +183,71 @@ cd ../production
 ```
 
 **Nhiệm vụ:** Đọc `Dockerfile` và tìm:
-- Stage 1 làm gì?
-- Stage 2 làm gì?
-- Tại sao image nhỏ hơn?
+- Stage 1 (builder): cài dependencies và build các package cần compile.
+- Stage 2 (runtime): tạo image production chỉ chứa code và package cần để chạy app.
+- Vì sao image nhỏ hơn: vì image cuối không chứa compiler, build tools và các file tạm của quá trình build.
 
 Build và so sánh:
 ```bash
 docker build -t my-agent:advanced .
 docker images | grep my-agent
+
+REPOSITORY                                      TAG                       IMAGE ID       CREATED          SIZE
+my-agent                                        advanced                  b8afee794b48   10 minutes ago   236MB
+my-agent                                        develop                   f3ff076db089   36 minutes ago   1.66GB
+docker.elastic.co/kibana/kibana                 8.17.3                    7dfee7a14cf7   13 months ago    1.92GB
+docker.elastic.co/elasticsearch/elasticsearch   8.17.3                    224c75e346bd   13 months ago    2.05GB
+bde2020/hadoop-resourcemanager                  2.0.0-hadoop3.2.1-java8   91ca2afe8616   6 years ago      2.05GB
+bde2020/hadoop-namenode                         2.0.0-hadoop3.2.1-java8   51ad9293ec52   6 years ago      2.05GB
+bde2020/hadoop-datanode                         2.0.0-hadoop3.2.1-java8   ddf6e9ad55af   6 years ago      2.05GB
+my-agent                                        advanced                  b8afee794b48   10 minutes ago   236MB
+my-agent                                        develop                   f3ff076db089   36 minutes ago   1.66GB
 ```
 
 ###  Exercise 2.4: Docker Compose stack
 
-**Nhiệm vụ:** Đọc `docker-compose.yml` và vẽ architecture diagram.
+**Nhiệm vụ:** Đọc `docker-compose.yml` và vẽ architecture diagram. 
 
 ```bash
 docker compose up
 ```
+Internet / Browser / curl
+          |
+          v
+     +---------+
+     |  nginx  |
+     | :80 :443|
+     +---------+
+          |
+          | reverse proxy
+          v
+     +---------+
+     |  agent  |
+     | FastAPI |
+     | :8000   |
+     +---------+
+       |     |
+       |     |
+       v     v
+   +-------+  +--------+
+   | redis |  | qdrant |
+   | :6379 |  | :6333  |
+   +-------+  +--------+
+
+Network: internal (bridge)
+Volumes:
+- redis_data   -> Redis persistence
+- qdrant_data  -> Qdrant persistence
 
 Services nào được start? Chúng communicate thế nào?
+
+Khi docker compose up, các service được start là: nginx, agent, redis, qdrant.
+Chúng giao tiếp như sau:
+- Client → nginx qua localhost port 80/443
+- nginx → agent bằng reverse proxy trong mạng nội bộ
+- agent → redis để cache/session/rate limit
+- agent → qdrant để vector search / RAG
+Tất cả cùng giao tiếp qua Docker network nội bộ bằng service name
 
 Test:
 ```bash
@@ -277,10 +331,19 @@ Test:
 # Health check
 curl http://student-agent-domain/health
 
+status uptime_seconds platform timestamp                       
+------ -------------- -------- ---------                       
+ok              743.9 Railway  2026-04-17T15:39:18.458848+00:00
+
 # Agent endpoint
 curl http://studen-agent-domain/ask -X POST \
   -H "Content-Type: application/json" \
   -d '{"question": ""}'
+
+  question              answer                                                                                                            platfor
+                                                                                                                                        m      
+--------              ------                                                                                                            -------
+Explain microservices Ä¢y lÃ  cÃ¢u tráº£ lá»Ã¢y sáº½ lÃ  response tá»« OpenAI/Anthropic. Railway
 ```
 
 ###  Exercise 3.2: Deploy Render (15 phút)
@@ -300,6 +363,8 @@ cd ../render
 7. Deploy!
 
 **Nhiệm vụ:** So sánh `render.yaml` với `railway.toml`. Khác nhau gì?
+- render.yaml là file Blueprint/IaC, mô tả cả hạ tầng trên Render như web service, Redis, env vars, region, plan, auto deploy trong một file YAML.
+- railway.toml là file cấu hình deploy cho một service trên Railway, chủ yếu khai báo builder, start command, health check, restart policy; biến môi trường thường set thêm qua Dashboard hoặc CLI.
 
 ###  Exercise 3.3: (Optional) GCP Cloud Run (15 phút)
 
@@ -342,6 +407,8 @@ cd ../../04-api-gateway/develop
 - Điều gì xảy ra nếu sai key?
 - Làm sao rotate key?
 
+Ứng dụng kiểm tra API key trong dependency verify_api_key() thông qua header X-API-Key. Nếu thiếu key sẽ trả 401, nếu sai key sẽ trả 403. Việc rotate key được thực hiện bằng cách đổi biến môi trường AGENT_API_KEY và redeploy/restart ứng dụng.
+
 Test:
 ```bash
 python app.py
@@ -373,6 +440,15 @@ python app.py
 curl http://localhost:8000/token -X POST \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "secret"}'
+
+  >>   -Method POST `
+>>   -ContentType "application/json" `
+>>   -Body '{"username":"student","password":"demo123"}'
+>> $resp
+
+access_token                                                                                                                       
+------------                                                                                                                       
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzdHVkZW50Iiwicm9sZSI6InVzZXIiLCJpYXQiOjE3NzY0NDI1NzksImV4cCI6MTc3NjQ0NjE3OX0.aUu...
 ```
 
 3. Dùng token để gọi API:
@@ -382,15 +458,22 @@ curl http://localhost:8000/ask -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question": "Explain JWT"}'
+
+  question    answer                                                                                     usage                       
+--------    ------                                                                                     -----                       
+Explain JWT TÃ´i lÃ  AI agent ÄÆ°á»£c deploy lÃªn cloud. CÃ¢u há»i cá»§a báº¡n ÄÃ£ ÄÆ°á»£c nháºn. @{requests_remaining=9; b...
 ```
 
 ###  Exercise 4.3: Rate limiting
 
 **Nhiệm vụ:** Đọc `rate_limiter.py` và trả lời:
 - Algorithm nào được dùng? (Token bucket? Sliding window?)
+Algorithm được dùng: Sliding Window Counter. Mỗi user có một bucket deque lưu timestamp request trong cửa sổ 60 giây; request cũ bị loại ra khỏi window trước khi kiểm tra limit.
 - Limit là bao nhiêu requests/minute?
+User thường: 10 request / 60 giây
+Admin: 100 request / 60 giây
 - Làm sao bypass limit cho admin?
-
+Trong app.py, hệ thống chọn limiter theo role: nếu role == "admin" thì dùng rate_limiter_admin, ngược lại dùng rate_limiter_user. Vì vậy admin không bypass hoàn toàn, nhưng có ngưỡng cao hơn rất nhiều.
 Test:
 ```bash
 # Gọi liên tục 20 lần
